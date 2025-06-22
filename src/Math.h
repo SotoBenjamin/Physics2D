@@ -1,5 +1,6 @@
 #pragma once
 #include <cmath>
+#include <algorithm>
 namespace Math {
     struct Vec2 {
         float x,y;
@@ -45,7 +46,6 @@ namespace Math {
             return *this *= (1.0f/s);
         }
         Vec2 operator-() const { return {-x, -y}; }
-        Vec2 operator*(float s, const Vec2 &v) const { return v * s; }
 
     };
     struct Vec3{ float x,y,z;};
@@ -68,6 +68,7 @@ namespace Math {
     inline Vec2 cross(const Vec2& v, float s){ return { s * v.y, -s * v.x };}
     inline Vec2 cross(float s, const Vec2& v){return {-s * v.y,  s * v.x };}
     inline float length(const Vec2& v){ return std::sqrt(dot(v, v));}
+    inline Vec2 operator*(float s, const Vec2& v) { return v * s; }
 
     inline Vec2 normalize(const Vec2& v) {
         float len = length(v);
