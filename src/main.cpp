@@ -25,7 +25,7 @@ int main() {
     PhysicsEngine physicsEngine;
 
     // Ajustamos la gravedad
-    physicsEngine.simulationPhysicsSettings.gravity = {0.0f, 300.0f};
+    physicsEngine.simulationPhysicsSettings.gravity = {0.0f, 250.f};
 
     // --- 2. CREACIÓN DE LOS OBJETOS FÍSICOS ---
 
