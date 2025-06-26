@@ -1,119 +1,161 @@
 #include <SFML/Graphics.hpp>
-#include "polyphysics.h"
-#include <cmath>
+#include "polyphysics.h" // Asumimos que todo tu código está en este header.
 #include <iostream>
-#include <algorithm>  // for std::reverse
 
-int main()
-{
-    const unsigned W = 800, H = 600;
-    sf::RenderWindow window({W, H}, "Circle vs Triangle");
+// Función para convertir de Vec2 de tu motor a sf::Vector2f de SFML
+sf::Vector2f toSfmlVec(const Vec2& v) {
+    return sf::Vector2f(v.x, v.y);
+}
+
+// Función para generar un color aleatorio para cada objeto
+sf::Color getRandomColor() {
+    return sf::Color(100 + rand() % 156, 100 + rand() % 156, 100 + rand() % 156);
+}
+
+int main() {
+    // --- 1. CONFIGURACIÓN INICIAL ---
+
+    // Configuración de la ventana de SFML
+    const int WINDOW_WIDTH = 1280;
+    const int WINDOW_HEIGHT = 720;
+    sf::RenderWindow window(sf::VideoMode(WINDOW_WIDTH, WINDOW_HEIGHT), "Motor de Fisica 2D (Cajas y Circulos)");
     window.setFramerateLimit(60);
 
-    PhysicsEngine engine;
-    engine.simulationPhysicsSettings.gravity                   = {0, 0};
-    engine.simulationPhysicsSettings.restingVelocity           = 0.0f;
-    engine.simulationPhysicsSettings.restingAngularVelocity    = 0.0f;
-    // ← DESACTIVO TODO EL DRAG GLOBALMENTE
-    engine.simulationPhysicsSettings.airDragCoefficient        = 0.0f;
-    engine.simulationPhysicsSettings.rotationalDragCoefficient = 0.0f;
+    // Creación del motor de física
+    PhysicsEngine physicsEngine;
 
-    // ——— 1) Círculo ———
-    float r = 30.f;
-    ph2dBodyId circleId = engine.addBody({100.f, 100.f}, createCircleCollider(r));
-    engine.bodies[circleId].motionState.velocity = { 150.f,  80.f };
+    // Ajustamos la gravedad
+    physicsEngine.simulationPhysicsSettings.gravity = {0.0f, 300.0f};
 
-    // ——— 2) Triángulo equilátero ———
-    float side   = 80.f;
-    float height = side * std::sqrt(3.f) / 2.f;
-    Vec2 triVerts[3] = {
-        {   0.f,      -2*height/3 },  // vértice superior
-        { -side/2,     height/3   },  // vértice izquierdo
-        {  side/2,     height/3   }   // vértice derecho
-    };
+    // --- 2. CREACIÓN DE LOS OBJETOS FÍSICOS ---
 
-    // Si lo quieres en CW para que rote correctamente:
-    std::reverse(triVerts, triVerts + 3);
+    // Añadir un suelo estático (usando un Half-Space)
+    // Un plano con normal hacia arriba (0, -1) posicionado en y=700
+    physicsEngine.addHalfSpaceStaticObject({WINDOW_WIDTH / 2.0f, (float)WINDOW_HEIGHT - 20.f}, {0.0f, -1.0f});
 
-    // Calculamos la posición inicial para que el triángulo
-    // toque la esquina inferior derecha de la ventana:
-    float startX = W - side * 0.5f;    // centro desplazado half-base hacia la izquierda
-    float startY = H - height * (1.f/3.f); // centro un tercio de la altura hacia arriba
+    // Añadir una pared estática a la izquierda
+    physicsEngine.addHalfSpaceStaticObject({20.f, WINDOW_HEIGHT / 2.0f}, {1.0f, 0.0f});
 
-    ph2dBodyId triId = engine.addBody(
-        { startX, startY },
-        createConvexPolygonCollider(triVerts, 3)
-    );
-    engine.bodies[triId].motionState.velocity        = {-120.f, -100.f};
-    engine.bodies[triId].motionState.angularVelocity =   1.2f;  // para que rote
+    // Añadir una pared estática a la derecha
+    physicsEngine.addHalfSpaceStaticObject({(float)WINDOW_WIDTH - 20.f, WINDOW_HEIGHT / 2.0f}, {-1.0f, 0.0f});
 
-    sf::Clock clock;
-    while (window.isOpen())
-    {
-        // ——— Eventos ———
-        sf::Event ev;
-        while (window.pollEvent(ev))
-            if (ev.type == sf::Event::Closed)
+
+    // --- Crear una pequeña pila de cajas ---
+    for(int i = 0; i < 5; ++i) {
+        auto boxId = physicsEngine.addBody({600.f, (float)(WINDOW_HEIGHT - 50 - i * 50)}, createBoxCollider({50.f, 50.f}));
+        physicsEngine.bodies[boxId].elasticity = 0.1f;
+        physicsEngine.bodies[boxId].staticFriction = 0.8f;
+    }
+
+    // Añadir un círculo para que choque contra la pila
+    auto circleId = physicsEngine.addBody({450.f, (float)WINDOW_HEIGHT - 50}, createCircleCollider(25.f));
+    physicsEngine.bodies[circleId].elasticity = 0.4f;
+    physicsEngine.bodies[circleId].motionState.velocity = {150.f, 0.f}; // Dale un impulso inicial
+
+
+    // Mapa para asociar IDs de cuerpos con formas de SFML
+    std::unordered_map<ph2dBodyId, sf::Shape*> bodyShapes;
+
+    // Formas visuales para el suelo y las paredes
+    sf::RectangleShape floorShape, leftWallShape, rightWallShape;
+    floorShape.setSize({(float)WINDOW_WIDTH, 20.f});
+    floorShape.setPosition({0, (float)WINDOW_HEIGHT - 20.f});
+    floorShape.setFillColor(sf::Color(180, 180, 180));
+
+    leftWallShape.setSize({20.f, (float)WINDOW_HEIGHT});
+    leftWallShape.setPosition({0, 0});
+    leftWallShape.setFillColor(sf::Color(180, 180, 180));
+
+    rightWallShape.setSize({20.f, (float)WINDOW_HEIGHT});
+    rightWallShape.setPosition({(float)WINDOW_WIDTH - 20.f, 0});
+    rightWallShape.setFillColor(sf::Color(180, 180, 180));
+
+    // Reloj para medir el tiempo delta (deltaTime)
+    sf::Clock deltaClock;
+
+    // --- 3. BUCLE PRINCIPAL DEL JUEGO ---
+    while (window.isOpen()) {
+        // --- Manejo de eventos ---
+        sf::Event event;
+        while (window.pollEvent(event)) {
+            if (event.type == sf::Event::Closed) {
                 window.close();
-
-        // ——— Simulación ———
-        float dt = clock.restart().asSeconds();
-        engine.runSimulation(dt);
-
-        auto& T = engine.bodies[triId].motionState;
-        std::cout
-            << "tri pos = " << T.pos.x << ", " << T.pos.y
-            << "   vel = " << T.velocity.x << ", " << T.velocity.y
-            << "\n";
-
-        // ——— Rebote contra los bordes ———
-        auto bounce = [&](ph2dBodyId id) {
-            auto& B = engine.bodies[id];
-            Vec2&  p = B.motionState.pos;
-            Vec2&  v = B.motionState.velocity;
-
-            // AABB sin rotar (aprox. suficiente para rebote)
-            AABB a = B.getAABB();
-            Vec2 mn = a.min(), mx = a.max();
-
-            if (mn.x < 0.f) { p.x += -mn.x; v.x =  std::abs(v.x); }
-            if (mx.x > W)  { p.x +=  W - mx.x; v.x = -std::abs(v.x); }
-            if (mn.y < 0.f) { p.y += -mn.y; v.y =  std::abs(v.y); }
-            if (mx.y > H)  { p.y +=  H - mx.y; v.y = -std::abs(v.y); }
-        };
-        bounce(circleId);
-        bounce(triId);
-
-        // ——— Render ———
-        window.clear(sf::Color::Black);
-
-        // Dibuja el círculo
-        {
-            auto& B = engine.bodies[circleId];
-            sf::CircleShape shape(r);
-            shape.setOrigin(r, r);
-            shape.setPosition(B.motionState.pos.x, B.motionState.pos.y);
-            shape.setFillColor(sf::Color::Green);
-            window.draw(shape);
+            }
+            // ¡Función extra! Haz clic para añadir un objeto nuevo.
+            if (event.type == sf::Event::MouseButtonPressed) {
+                Vec2 mousePos = {(float)event.mouseButton.x, (float)event.mouseButton.y};
+                if (event.mouseButton.button == sf::Mouse::Left) {
+                    // Clic izquierdo añade una caja
+                    physicsEngine.addBody(mousePos, createBoxCollider({30.f, 30.f}));
+                } else if (event.mouseButton.button == sf::Mouse::Right) {
+                    // Clic derecho añade un círculo
+                    physicsEngine.addBody(mousePos, createCircleCollider(20.f));
+                }
+            }
         }
 
-        // Dibuja el triángulo
-        {
-            auto& B = engine.bodies[triId];
-            sf::ConvexShape tri;
-            tri.setPointCount(3);
-            for (int i = 0; i < 3; ++i)
-                tri.setPoint(i, sf::Vector2f(triVerts[i].x, triVerts[i].y));
-            // Como origin está en (0,0) = centroide, rota alrededor de su centro
-            tri.setOrigin(0.f, 0.f);
-            tri.setPosition(B.motionState.pos.x, B.motionState.pos.y);
-            tri.setRotation(B.motionState.rotation * 180.f / 3.14159265f);
-            tri.setFillColor(sf::Color::Magenta);
-            window.draw(tri);
+        // --- Actualización de la física ---
+        float deltaTime = deltaClock.restart().asSeconds();
+        physicsEngine.runSimulation(deltaTime);
+
+        // --- Renderizado ---
+        window.clear(sf::Color(30, 30, 50)); // Fondo azul oscuro
+
+        // Dibuja el suelo y las paredes
+        window.draw(floorShape);
+        window.draw(leftWallShape);
+        window.draw(rightWallShape);
+
+        // Dibuja cada cuerpo del motor
+        for (const auto& pair : physicsEngine.bodies) {
+            const ph2dBodyId id = pair.first;
+            const Body& body = pair.second;
+
+            // No dibujamos los semiplanos, ya que son infinitos
+            if (body.isHalfPlane()) continue;
+
+            sf::Shape* shape = nullptr;
+
+            // Si es un cuerpo nuevo, crea su forma visual correspondiente
+            if (bodyShapes.find(id) == bodyShapes.end()) {
+                if (body.collider.type == ColliderBox) {
+                    auto* rect = new sf::RectangleShape();
+                    rect->setSize(toSfmlVec(body.collider.collider.box.size));
+                    rect->setOrigin(rect->getSize().x / 2.f, rect->getSize().y / 2.f);
+                    shape = rect;
+                } else if (body.collider.type == ColliderCircle) {
+                    auto* circle = new sf::CircleShape();
+                    circle->setRadius(body.collider.collider.circle.radius);
+                    circle->setOrigin(circle->getRadius(), circle->getRadius());
+                    shape = circle;
+                }
+
+                if (shape) {
+                    shape->setFillColor(getRandomColor());
+                    shape->setOutlineThickness(1.5f);
+                    shape->setOutlineColor(sf::Color(230, 230, 230));
+                    bodyShapes[id] = shape;
+                }
+            }
+
+            // Actualiza la posición y rotación de la forma visual
+            shape = bodyShapes[id];
+            if (shape) {
+                shape->setPosition(toSfmlVec(body.motionState.pos));
+                // Tu motor usa radianes, SFML usa grados. ¡Hay que convertir!
+                shape->setRotation(Math::degrees(body.motionState.rotation));
+                window.draw(*shape);
+            }
         }
 
         window.display();
     }
+
+    // --- Limpieza ---
+    for (auto& pair : bodyShapes) {
+        delete pair.second;
+    }
+    bodyShapes.clear();
 
     return 0;
 }

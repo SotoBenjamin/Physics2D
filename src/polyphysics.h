@@ -598,19 +598,25 @@ inline bool HalfSpaceVSCircle(LineEquation line,
     float r = circle.size.x * 0.5f;
 
     line.normalize();
-
-    normal = line.getNormal();
+    normal = line.getNormal(); // La normal del plano (apunta hacia el espacio "vacío")
 
     Vec2 center = circle.center();
+    // Esta es la distancia con signo del centro del círculo al plano.
+    // Será negativa si el centro está "dentro" del material del suelo.
     float distance = line.computeEquation(center);
 
-    penetration = r + distance;
-
-    if (penetration > 0.0f) {
-        contactPoint = center + normal * (r - penetration * 0.5f);
-        return true;
+    // Si la distancia es mayor que el radio, no hay contacto.
+    if (distance > r) {
+        return false;
     }
-    return false;
+
+    // La penetración es la distancia que el borde del círculo ha cruzado.
+    penetration = r - distance;
+
+    // El punto de contacto es el punto en la superficie del círculo más profundo.
+    contactPoint = center - normal * r;
+
+    return true;
 }
 
 /**
@@ -852,99 +858,56 @@ inline bool HalfSpaceVsOBB(
     float& penetration,
     Vec2& normal,
     Vec2& contactPoint,
-    Vec2& tangentA,
-    Vec2& tangentB)
+    Vec2& tangentA,  // Nota: No usaremos las tangentes en esta versión simplificada
+    Vec2& tangentB)  // ya que no son la causa del problema.
 {
-    Vec2 corners[4];
-    bbox.getCornersRotated(corners, rotation);
-
+    // 1. Obtener la normal del plano (suelo)
     line.normalize();
     normal = line.getNormal();
 
-    std::vector<Vec2> intersectionPoints;
-    intersectionPoints.reserve(6);
+    // 2. Obtener los 4 vértices de la caja rotada en el mundo
+    Vec2 corners[4];
+    bbox.getCornersRotated(corners, rotation);
 
-    for (int i = 0; i < 4; ++i) {
-        Vec2 start = corners[i];
-        Vec2 end   = corners[(i + 1) % 4];
+    // 3. Encontrar los vértices que están penetrando y la máxima penetración
+    float maxPenetration = -std::numeric_limits<float>::infinity();
+    std::vector<Vec2> contactPoints;
+    contactPoints.reserve(4);
 
-        float d0 = line.computeEquation(start);
-        float d1 = line.computeEquation(end);
+    for (int i = 0; i < 4; ++i)
+    {
+        // Calcula la distancia con signo de cada vértice al plano
+        float distance = line.computeEquation(corners[i]);
 
-        if (d0 >= 0.0f) {
-            intersectionPoints.push_back(start);
-        }
-        if (d0 * d1 < 0.0f) {
-            float t = d0 / (d0 - d1);
-            Vec2 ip = start + (end - start) * t;
-            intersectionPoints.push_back(ip);
+        // Si la distancia es negativa, el vértice ha penetrado el plano
+        if (distance <= 0.0f)
+        {
+            // La profundidad de penetración de este vértice es -distancia
+            maxPenetration = std::max(maxPenetration, -distance);
+            contactPoints.push_back(corners[i]);
         }
     }
 
-    if (intersectionPoints.empty()) {
+    // 4. Si ningún vértice ha penetrado, no hay colisión
+    if (contactPoints.empty())
+    {
         return false;
     }
 
-    // 4) Determino tangentB según nº de puntos
-    tangentB = {0, 0};
-    Vec2 bestStart{0,0}, bestEnd{0,0};
-    size_t count = intersectionPoints.size();
+    // 5. Hay colisión. Asignar los valores de salida.
+    penetration = maxPenetration;
 
-    if (count == 2) {
-        bestStart = intersectionPoints[0];
-        bestEnd   = intersectionPoints[1];
-        tangentB  = Math::normalize(bestEnd - bestStart);
-    }
-    else if (count == 3) {
-        float bestPen = -std::numeric_limits<float>::infinity();
-        int  idx      = 0;
-        for (int i = 0; i < 3; ++i) {
-            float pd = line.computeEquation(intersectionPoints[i]);
-            if (pd > bestPen) {
-                bestPen = pd;
-                idx     = i;
-            }
-        }
-        Vec2 e1 = intersectionPoints[idx]
-                - intersectionPoints[(idx + 1) % 3];
-        Vec2 e2 = intersectionPoints[idx]
-                - intersectionPoints[(idx + 2) % 3];
-        float l1 = Math::length(e1), l2 = Math::length(e2);
-        if (l1 > l2 && l1 > 0.0f) {
-            tangentB = e1 / l1;
-        } else if (l2 > 0.0f) {
-            tangentB = e2 / l2;
-        }
-    }
-    else {
-        float bestPen = -std::numeric_limits<float>::infinity();
-        for (size_t i = 0; i < count; ++i) {
-            Vec2 s = intersectionPoints[i];
-            Vec2 e = intersectionPoints[(i + 1) % count];
-            float sum = line.computeEquation(s) + line.computeEquation(e);
-            if (sum > bestPen) {
-                bestPen   = sum;
-                bestStart = s;
-                bestEnd   = e;
-            }
-        }
-        tangentB = Math::normalize(bestEnd - bestStart);
-    }
-
-    Vec2 centroid{0,0};
-    for (auto& p : intersectionPoints) {
+    // El punto de contacto es el promedio (centroide) de los puntos que penetraron.
+    Vec2 centroid = {0,0};
+    for(const auto& p : contactPoints)
+    {
         centroid += p;
     }
-    centroid /= static_cast<float>(intersectionPoints.size());
-    contactPoint = centroid;
+    contactPoint = centroid / static_cast<float>(contactPoints.size());
 
-    penetration = 0.0f;
-    for (auto& p : intersectionPoints) {
-        float d = line.computeEquation(p);
-        if (d > penetration) penetration = d;
-    }
-
+    // Las tangentes se pueden calcular si son necesarias, pero por ahora las ignoramos.
     tangentA = line.getLineVector();
+    tangentB = {0,0}; // No es crítico para la resolución de la colisión.
 
     return true;
 }
@@ -1479,7 +1442,7 @@ inline bool BodyvsBody(
         bool rez = HalfSpaceVSCircle(eq,
                                      aabbB,
                                      penetration, normal, contactPoint);
-        normal = -normal;
+
         return rez;
     }
 
@@ -1500,7 +1463,6 @@ inline bool BodyvsBody(
                                  B.motionState.rotation,
                                  penetration, normal, contactPoint,
                                  tangentA, tangentB);
-        normal = -normal;
         return rez;
     }
 
