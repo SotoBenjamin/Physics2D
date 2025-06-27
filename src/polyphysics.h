@@ -1560,9 +1560,8 @@ struct SimulationPhysicsSettings
     float maxAngularDrag         {  100.0f};
     float airDragCoefficient     {    0.05f};
     float rotationalDragCoefficient{   0.02f};
-    float restingVelocity        {    2.f};
-    // 0.01 grados → radianes = 0.01 * π/180
-    float restingAngularVelocity { 2.f /* (3.14159265358979323846f / 180.0f)*/ };
+    float restingVelocity        {    2.3f};
+    float restingAngularVelocity { 2.3f /* (3.14159265358979323846f / 180.0f)*/ };
 };
 
 struct Constrain
@@ -1586,7 +1585,7 @@ struct PhysicsEngine
 
     float setFixedTimeStamp{0.008f};
     float maxAccumulated    {0.32f};
-    int   collisionChecksCount{16};
+    int   collisionChecksCount{24};
 
     float _fixedTimeAccumulated{0.0f};
 
@@ -1750,7 +1749,7 @@ inline void PhysicsEngine::runSimulation(float deltaTime)
                               ? 1.0f / B.motionState.mass : 0.0f;
             if (invMassA + invMassB == 0.0f) return;
 
-            const float percent = 0.20f;
+            const float percent = 0.3f;
             const float slop    = 4.f;
             float k = std::max(pen - slop, 0.0f) / (invMassA + invMassB) * percent;
             Vec2 corr = n * k;
@@ -1808,7 +1807,6 @@ inline void PhysicsEngine::runSimulation(float deltaTime)
             if (denom == 0.0f) return;
             jt /= denom;
 
-            // μ = sqrt(μ_sA² + μ_sB²)
             float mu_s = std::sqrt(A.staticFriction*A.staticFriction
                                  + B.staticFriction*B.staticFriction);
 
@@ -1919,7 +1917,6 @@ inline void PhysicsEngine::runSimulation(float deltaTime)
                     }
                     m.contactPoint = contact;
                     m.penetration  = pen;
-                    // contain returns a boolean. Usable in C++20
 
                     if (contacts.find(it1.first) != contacts.end() && contacts[it1.first].find(it2.first) != contacts[it1.first].end()) {
                         intersections.push_back(m);

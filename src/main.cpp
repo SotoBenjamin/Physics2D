@@ -1,18 +1,16 @@
 #include <SFML/Graphics.hpp>
-#include "polyphysics.h" // Asegúrate de que este es el nombre de tu header
+#include "polyphysics.h"
 #include <iostream>
 #include <vector>
 #include <unordered_map>
 
-// --- FUNCIONES DE AYUDA ---
 sf::Vector2f toSfmlVec(const Vec2& v) {
-    return sf::Vector2f(v.x, v.y);
+    return {v.x, v.y};
 }
 Vec2 fromSfmlVec(const sf::Vector2f& v) {
-    return Vec2(v.x, v.y);
+    return {v.x, v.y};
 }
 
-// --- VARIABLES GLOBALES PARA LA LÓGICA DEL JUEGO ---
 PhysicsEngine physicsEngine;
 ph2dBodyId birdId = 0;
 std::vector<ph2dBodyId> structureBodyIds;
@@ -21,9 +19,7 @@ std::unordered_map<ph2dBodyId, sf::Shape*> bodyShapes;
 const int WINDOW_WIDTH = 1280;
 const int WINDOW_HEIGHT = 720;
 
-// --- FUNCIÓN PARA REINICIAR LA ESCENA ---
 void resetScene() {
-    // Limpiar el motor y las formas visuales
     physicsEngine.bodies.clear();
     for (auto& pair : bodyShapes) {
         delete pair.second;
@@ -31,43 +27,35 @@ void resetScene() {
     bodyShapes.clear();
     structureBodyIds.clear();
 
-    // --- Crear el mundo ---
-    // Suelo
+
     physicsEngine.addHalfSpaceStaticObject({WINDOW_WIDTH / 2.0f, (float)WINDOW_HEIGHT - 20.f}, {0.0f, -1.0f});
-    // Pared derecha (para que no se caiga todo)
     physicsEngine.addHalfSpaceStaticObject({(float)WINDOW_WIDTH - 20.f, WINDOW_HEIGHT / 2.0f}, {-1.0f, 0.0f});
 
-    // --- Crear la estructura de cajas ---
-    // Base
+
     auto boxId1 = physicsEngine.addBody({900.f, (float)WINDOW_HEIGHT - 50.f}, createBoxCollider({150.f, 25.f}));
     auto boxId2 = physicsEngine.addBody({1050.f, (float)WINDOW_HEIGHT - 50.f}, createBoxCollider({150.f, 25.f}));
-    // Nivel medio
     auto boxId3 = physicsEngine.addBody({975.f, (float)WINDOW_HEIGHT - 100.f}, createBoxCollider({25.f, 50.f}));
     auto boxId4 = physicsEngine.addBody({900.f, (float)WINDOW_HEIGHT - 150.f}, createBoxCollider({150.f, 25.f}));
     auto boxId5 = physicsEngine.addBody({1050.f, (float)WINDOW_HEIGHT - 150.f}, createBoxCollider({150.f, 25.f}));
-    // Nivel superior
     auto boxId6 = physicsEngine.addBody({975.f, (float)WINDOW_HEIGHT - 200.f}, createBoxCollider({25.f, 50.f}));
 
     structureBodyIds = {boxId1, boxId2, boxId3, boxId4, boxId5, boxId6};
 
-    // --- HACER QUE LA ESTRUCTURA SEA FIJA INICIALMENTE ---
     for (auto id : structureBodyIds) {
         physicsEngine.bodies[id].flags.setKinematic(true);
-        physicsEngine.bodies[id].elasticity = 0.1f;
+        physicsEngine.bodies[id].elasticity = 1.f;
         physicsEngine.bodies[id].staticFriction = 0.2f;
         physicsEngine.bodies[id].dynamicFriction = 0.2f;
     }
 
-    // --- Crear el "Pájaro" ---
     birdId = physicsEngine.addBody({200.f, 550.f}, createCircleCollider(25.f));
     physicsEngine.bodies[birdId].elasticity = 0.5f;
-    physicsEngine.bodies[birdId].motionState.mass = 20.f; // Hacemos al pájaro más pesado
+    physicsEngine.bodies[birdId].motionState.mass = 50.f; // Hacemos al pájaro más pesado
     physicsEngine.bodies[birdId].flags.setKinematic(true); // Lo hacemos cinemático hasta que se lance
 }
 
 
 int main() {
-    // --- CONFIGURACIÓN INICIAL ---
     sf::RenderWindow window(sf::VideoMode(WINDOW_WIDTH, WINDOW_HEIGHT), "Simulacion Estilo Angry Birds");
     window.setFramerateLimit(120);
 
@@ -77,12 +65,10 @@ int main() {
     physicsEngine.simulationPhysicsSettings.rotationalDragCoefficient = 0.0002f;
     resetScene();
 
-    // Variables para el lanzamiento
     bool isDragging = false;
     sf::Vector2i dragStartPos;
     sf::Vertex line[2];
 
-    // Formas visuales para el suelo y las paredes
     sf::RectangleShape floorShape, rightWallShape;
     floorShape.setSize({(float)WINDOW_WIDTH, 20.f});
     floorShape.setPosition({0, (float)WINDOW_HEIGHT - 20.f});
@@ -93,9 +79,8 @@ int main() {
 
     sf::Clock deltaClock;
 
-    // --- BUCLE PRINCIPAL DEL JUEGO ---
     while (window.isOpen()) {
-        sf::Event event;
+        sf::Event event{};
         while (window.pollEvent(event)) {
             if (event.type == sf::Event::Closed) {
                 window.close();
@@ -104,7 +89,6 @@ int main() {
                 resetScene();
             }
 
-            // --- Lógica de lanzamiento ---
             if (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left) {
                  if (physicsEngine.bodies[birdId].flags.isKinematic()) {
                     isDragging = true;
@@ -123,12 +107,9 @@ int main() {
             }
         }
 
-        // --- ACTUALIZACIÓN DE LA FÍSICA ---
         float deltaTime = deltaClock.restart().asSeconds();
         physicsEngine.runSimulation(deltaTime);
 
-        // --- LÓGICA DEL JUEGO (POST-FÍSICA) ---
-        // Implementación de la reacción en cadena
 
         std::vector<ph2dBodyId> bodiesToWakeUp;
         for (const auto& manifold : physicsEngine.intersections) {
@@ -154,18 +135,15 @@ int main() {
             }
         }
 
-        // Activamos todos los cuerpos que deben despertar
         for (auto id : bodiesToWakeUp) {
             physicsEngine.bodies[id].flags.setKinematic(false);
         }
 
-        // --- RENDERIZADO ---
         window.clear(sf::Color(40, 45, 60));
 
         window.draw(floorShape);
         window.draw(rightWallShape);
 
-        // Dibuja cada cuerpo del motor
         for (const auto& pair : physicsEngine.bodies) {
             const ph2dBodyId id = pair.first;
             const Body& body = pair.second;
@@ -205,7 +183,6 @@ int main() {
             }
         }
 
-        // Dibujar la línea de lanzamiento
         if (isDragging) {
             sf::Vector2f birdPos = toSfmlVec(physicsEngine.bodies[birdId].motionState.pos);
             line[0] = sf::Vertex(birdPos, sf::Color::White);
@@ -218,7 +195,6 @@ int main() {
         window.display();
     }
 
-    // --- LIMPIEZA ---
     for (auto& pair : bodyShapes) {
         delete pair.second;
     }
