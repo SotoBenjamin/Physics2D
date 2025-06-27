@@ -45,39 +45,6 @@ inline float vectorToRotation(const Vec2& v) {
     return std::atan2(-v.x, v.y);
 }
 
-
-// Proyecta los vértices de un polígono sobre un eje y devuelve el intervalo (min, max) de la "sombra".
-inline void projectVertices(const Vec2* vertices, int count, const Vec2& axis, float& min, float& max) {
-    min = std::numeric_limits<float>::infinity();
-    max = -std::numeric_limits<float>::infinity();
-    for (int i = 0; i < count; ++i) {
-        float projection = Math::dot(vertices[i], axis);
-        if (projection < min) min = projection;
-        if (projection > max) max = projection;
-    }
-}
-
-// Proyecta un círculo sobre un eje.
-inline void projectCircle(const Vec2& center, float radius, const Vec2& axis, float& min, float& max) {
-    float direction = Math::dot(center, axis);
-    min = direction - radius;
-    max = direction + radius;
-}
-
-// Encuentra el vértice de un polígono más lejano en una dirección dada.
-// Esencial para calcular un punto de contacto de forma sencilla.
-inline int findSupportPoint(const Vec2* vertices, int count, const Vec2& dir) {
-    float bestProjection = -std::numeric_limits<float>::infinity();
-    int bestIndex = -1;
-    for (int i = 0; i < count; i++) {
-        float projection = Math::dot(vertices[i], dir);
-        if (projection > bestProjection) {
-            bestProjection = projection;
-            bestIndex = i;
-        }
-    }
-    return bestIndex;
-}
 //---------------AABB--------------------------//
 struct AABB {
     Vec2 pos{0,0};
@@ -490,80 +457,6 @@ inline Vec2 findClosestEdge(const Vec2* corners, int count, const Vec2& point)
     return Math::normalize(closestEdge);
 }
 
-// --- NUEVA FUNCIÓN DE COLISIÓN: POLYGON vs POLYGON ---
-
-inline bool PolygonVsPolygon(
-    const ConvexPolygon& polyA, const Vec2& centerA, float rotA,
-    const ConvexPolygon& polyB, const Vec2& centerB, float rotB,
-    Vec2& normal, float& penetration)
-{
-    // Obtener los vértices de ambos polígonos en coordenadas del mundo
-    Vec2 verticesA[PH2D_MAX_CONVEX_SHAPE_POINTS];
-    polyA.getCornersRotatedInWorldSpace(verticesA, rotA, centerA);
-    int countA = polyA.vertexCount;
-
-    Vec2 verticesB[PH2D_MAX_CONVEX_SHAPE_POINTS];
-    polyB.getCornersRotatedInWorldSpace(verticesB, rotB, centerB);
-    int countB = polyB.vertexCount;
-
-    penetration = std::numeric_limits<float>::infinity();
-
-    // --- Bucle de SAT ---
-
-    // 1. Iterar sobre los ejes del polígono A
-    for (int i = 0; i < countA; ++i) {
-        Vec2 p1 = verticesA[i];
-        Vec2 p2 = verticesA[(i + 1) % countA];
-        Vec2 edge = p2 - p1;
-        Vec2 axis = Math::normalize({-edge.y, edge.x}); // La normal del borde es un eje a probar
-
-        float minA, maxA, minB, maxB;
-        projectVertices(verticesA, countA, axis, minA, maxA);
-        projectVertices(verticesB, countB, axis, minB, maxB);
-
-        // Si las "sombras" no se solapan, encontramos un eje separador. No hay colisión.
-        if (maxA < minB || maxB < minA) {
-            return false;
-        }
-
-        // Si hay solapamiento, comprobamos si es el menor hasta ahora
-        float overlap = std::min(maxA, maxB) - std::max(minA, minB);
-        if (overlap < penetration) {
-            penetration = overlap;
-            normal = axis;
-        }
-    }
-
-    // 2. Iterar sobre los ejes del polígono B
-    for (int i = 0; i < countB; ++i) {
-        Vec2 p1 = verticesB[i];
-        Vec2 p2 = verticesB[(i + 1) % countB];
-        Vec2 edge = p2 - p1;
-        Vec2 axis = Math::normalize({-edge.y, edge.x});
-
-        float minA, maxA, minB, maxB;
-        projectVertices(verticesA, countA, axis, minA, maxA);
-        projectVertices(verticesB, countB, axis, minB, maxB);
-
-        if (maxA < minB || maxB < minA) {
-            return false;
-        }
-
-        float overlap = std::min(maxA, maxB) - std::max(minA, minB);
-        if (overlap < penetration) {
-            penetration = overlap;
-            normal = axis;
-        }
-    }
-
-    // Si llegamos aquí, hay colisión. Ahora nos aseguramos de que la normal apunte de A hacia B.
-    Vec2 direction = centerB - centerA;
-    if (Math::dot(direction, normal) < 0.0f) {
-        normal = -normal;
-    }
-
-    return true;
-}
 
 inline bool OBBvsOBB(
     AABB a, float ar,
@@ -722,6 +615,7 @@ inline bool HalfSpaceVSCircle(LineEquation line,
 
     // El punto de contacto es el punto en la superficie del círculo más profundo.
     contactPoint = center - normal * r;
+
     return true;
 }
 
@@ -844,75 +738,103 @@ inline float orientationTest(const Vec2& A, const Vec2& B, const Vec2& C) {
  * @param contactPoint (out)      Punto aproximado de contacto
  * @return true si colisionan
  */
-
 inline bool CirclevsConvexPolygon(
-    const AABB& circle, const ConvexPolygon& convexPolygon,
-    const Vec2& convexPolygonCenter, float rotation,
-    float& penetration, Vec2& normal, Vec2& contactPoint)
+    const AABB& circle,
+    const ConvexPolygon& convexPolygon,
+    const Vec2& convexPolygonCenter,
+    float rotation,
+    float& penetration,
+    Vec2& normal,
+    Vec2& contactPoint)
 {
-    Vec2 vertices[PH2D_MAX_CONVEX_SHAPE_POINTS];
-    convexPolygon.getCornersRotatedInWorldSpace(vertices, rotation, convexPolygonCenter);
-    int vCount = convexPolygon.vertexCount;
+    penetration = 0.0f;
+    normal = {0.0f, 0.0f};
+
+    Vec2 corners[PH2D_MAX_CONVEX_SHAPE_POINTS];
+    convexPolygon.getCornersRotated(corners, rotation);
+    int vCount = std::min<int>(convexPolygon.vertexCount, PH2D_MAX_CONVEX_SHAPE_POINTS);
 
     Vec2 circleCenter = circle.center();
     float circleRadius = circle.size.x * 0.5f;
 
-    penetration = std::numeric_limits<float>::infinity();
+    Vec2 toCircle = circleCenter - convexPolygonCenter;
+    toCircle = Math::normalize(toCircle); // safe normalize
 
-    // 1. Probar los ejes del polígono
-    for (int i = 0; i < vCount; ++i) {
-        Vec2 p1 = vertices[i];
-        Vec2 p2 = vertices[(i + 1) % vCount];
-        Vec2 edge = p2 - p1;
-        Vec2 axis = Math::normalize({-edge.y, edge.x});
-
-        float minPoly, maxPoly, minCircle, maxCircle;
-        projectVertices(vertices, vCount, axis, minPoly, maxPoly);
-        projectCircle(circleCenter, circleRadius, axis, minCircle, maxCircle);
-
-        if (maxPoly < minCircle || maxCircle < minPoly) return false;
-
-        float overlap = std::min(maxPoly, maxCircle) - std::max(minPoly, minCircle);
-        if(overlap < penetration) {
-            penetration = overlap;
-            normal = axis;
+    int support = 0;
+    float bestDot = Math::dot(corners[0], toCircle);
+    for (int i = 1; i < vCount; ++i) {
+        float d = Math::dot(corners[i], toCircle);
+        if (d > bestDot) {
+            bestDot = d;
+            support = i;
         }
     }
+    int closestSupport = support;
 
-    // 2. Probar el eje especial: del vértice más cercano al centro del círculo
-    int closestVertexIndex = -1;
-    float minDistSq = std::numeric_limits<float>::infinity();
-    for(int i = 0; i < vCount; ++i) {
-        float distSq = Math::dot(vertices[i] - circleCenter, vertices[i] - circleCenter);
-        if(distSq < minDistSq) {
-            minDistSq = distSq;
-            closestVertexIndex = i;
+    int leftIdx  = (support - 1 + vCount) % vCount;
+    int rightIdx = (support + 1) % vCount;
+
+    Vec2 supportWorld   = corners[support]   + convexPolygonCenter;
+    Vec2 leftWorld      = corners[leftIdx]   + convexPolygonCenter;
+    Vec2 rightWorld     = corners[rightIdx]  + convexPolygonCenter;
+
+    contactPoint = supportWorld; // punto base
+
+    Vec2 dirToCircle = circleCenter - supportWorld;
+    Vec2 dirLeft     = leftWorld  - supportWorld;  dirLeft  = Math::normalize(dirLeft);
+    Vec2 dirRight    = rightWorld - supportWorld;  dirRight = Math::normalize(dirRight);
+
+    int secondSupport;
+    if (Math::dot(dirLeft, dirToCircle) > Math::dot(dirRight, dirToCircle)) {
+        secondSupport = leftIdx;
+    } else {
+        secondSupport = rightIdx;
+    }
+
+    if (orientationTest({0,0}, corners[support], corners[secondSupport]) < 0) {
+        std::swap(support, secondSupport);
+    }
+
+    Vec2 edge = corners[support] - corners[secondSupport];
+    edge = Math::normalize(edge);
+    normal = { edge.y, -edge.x };
+
+    LineEquation contactLine;
+    contactLine.createFromNormalAndPoint(-normal, corners[support] + convexPolygonCenter);
+
+    if (contactLine.getDistanceToPoint(circleCenter) > circleRadius) {
+        return false;
+    }
+
+    Vec2 cornerInWorld = corners[closestSupport] + convexPolygonCenter;
+    Vec2 toCorner      = cornerInWorld - circleCenter;
+    if (Math::dot(corners[support] - corners[secondSupport], dirToCircle) < 0 ||
+        Math::dot(corners[secondSupport] - corners[support], toCircle) < 0)
+    {
+        // Compruebo si está fuera del radio
+        if (Math::distance(cornerInWorld, circleCenter) > circleRadius) {
+            return false;
         }
+        // Ajusto normal
+        normal = toCorner;
+        float len = Math::length(normal);
+        if (len > 1e-8f) {
+            normal /= len;
+        } else {
+            normal = { edge.y, -edge.x };
+        }
+        Vec2 circleEdgePt = circleCenter + normal * circleRadius;
+        contactPoint = (circleEdgePt + cornerInWorld) * 0.5f;
+        penetration = Math::distance(circleEdgePt, cornerInWorld);
+    }
+    else
+    {
+        Vec2 circleEdgePt = circleCenter + normal * circleRadius;
+        penetration = contactLine.getDistanceToPoint(circleEdgePt);
+        contactPoint = circleEdgePt + normal * (penetration * 0.5f);
     }
 
-    Vec2 axis = Math::normalize(vertices[closestVertexIndex] - circleCenter);
-
-    float minPoly, maxPoly, minCircle, maxCircle;
-    projectVertices(vertices, vCount, axis, minPoly, maxPoly);
-    projectCircle(circleCenter, circleRadius, axis, minCircle, maxCircle);
-
-    if (maxPoly < minCircle || maxCircle < minPoly) return false;
-
-    float overlap = std::min(maxPoly, maxCircle) - std::max(minPoly, minCircle);
-    if(overlap < penetration) {
-        penetration = overlap;
-        normal = axis;
-    }
-
-    // Asegurarse de que la normal apunte del polígono (A) al círculo (B).
-    Vec2 direction = circleCenter - convexPolygonCenter;
-    if (Math::dot(direction, normal) < 0.0f) {
-        normal = -normal;
-    }
-
-    // Un buen punto de contacto es el centro del círculo movido hacia atrás por su radio.
-    contactPoint = circleCenter - normal * circleRadius;
-
+    normal = Math::normalize(normal);
     return true;
 }
 
@@ -986,6 +908,7 @@ inline bool HalfSpaceVsOBB(
     // Las tangentes se pueden calcular si son necesarias, pero por ahora las ignoramos.
     tangentA = line.getLineVector();
     tangentB = {0,0}; // No es crítico para la resolución de la colisión.
+
     return true;
 }
 /**
@@ -1003,37 +926,113 @@ inline bool HalfSpaceVsOBB(
  * @return true si hay colisión.
  */
 inline bool HalfSpaceVsConvexPolygon(
-    LineEquation line, const ConvexPolygon& convexPolygon,
-    const Vec2& convexPolygonCenter, float rotation,
-    float& penetration, Vec2& normal, Vec2& contactPoint,
-    Vec2& tangentA, Vec2& tangentB)
+    LineEquation line,
+    const ConvexPolygon& convexPolygon,
+    const Vec2& convexPolygonCenter,
+    float rotation,
+    float& penetration,
+    Vec2& normal,
+    Vec2& contactPoint,
+    Vec2& tangentA,
+    Vec2& tangentB)
 {
     line.normalize();
     normal = line.getNormal();
 
     Vec2 corners[PH2D_MAX_CONVEX_SHAPE_POINTS];
-    convexPolygon.getCornersRotatedInWorldSpace(corners, rotation, convexPolygonCenter);
-    int vCount = convexPolygon.vertexCount;
-
-    float maxPenetration = -std::numeric_limits<float>::infinity();
-    std::vector<Vec2> contactPoints;
+    convexPolygon.getCornersRotated(corners, rotation);
+    int vCount = std::min<int>(convexPolygon.vertexCount, PH2D_MAX_CONVEX_SHAPE_POINTS);
+    if (vCount < 3) return false;
 
     for (int i = 0; i < vCount; ++i) {
-        float distance = line.computeEquation(corners[i]);
-        if (distance <= 0.0f) {
-            maxPenetration = std::max(maxPenetration, -distance);
-            contactPoints.push_back(corners[i]);
+        corners[i] += convexPolygonCenter;
+    }
+
+    std::vector<Vec2> intersectionPoints;
+    intersectionPoints.reserve(vCount + 2);
+
+    for (int i = 0; i < vCount; ++i) {
+        Vec2 start = corners[i];
+        Vec2 end   = corners[(i + 1) % vCount];
+
+        float d0 = line.computeEquation(start);
+        float d1 = line.computeEquation(end);
+
+        if (d0 >= 0.0f) {
+            intersectionPoints.push_back(start);
+        }
+        if (d0 * d1 < 0.0f) {
+            float t = d0 / (d0 - d1);
+            intersectionPoints.push_back(start + (end - start) * t);
         }
     }
 
-    if (contactPoints.empty()) return false;
+    if (intersectionPoints.empty()) {
+        return false;
+    }
 
-    penetration = maxPenetration;
-    Vec2 centroid = {0,0};
-    for(const auto& p : contactPoints) centroid += p;
-    contactPoint = centroid / static_cast<float>(contactPoints.size());
+    tangentB = {0,0};
+    Vec2 bestS{0,0}, bestE{0,0};
+    size_t ipCount = intersectionPoints.size();
+
+    if (ipCount == 2) {
+        bestS     = intersectionPoints[0];
+        bestE     = intersectionPoints[1];
+        tangentB  = Math::normalize(bestE - bestS);
+    }
+    else if (ipCount == 3) {
+        float bestPen = -std::numeric_limits<float>::infinity();
+        int   idx     = 0;
+        for (int i = 0; i < 3; ++i) {
+            float pd = line.computeEquation(intersectionPoints[i]);
+            if (pd > bestPen) {
+                bestPen = pd;
+                idx     = i;
+            }
+        }
+        Vec2 e1 = intersectionPoints[idx]
+                - intersectionPoints[(idx + 1) % 3];
+        Vec2 e2 = intersectionPoints[idx]
+                - intersectionPoints[(idx + 2) % 3];
+        float l1 = Math::length(e1), l2 = Math::length(e2);
+        if (l1 > l2 && l1 > 0.0f) {
+            tangentB = e1 / l1;
+        } else if (l2 > 0.0f) {
+            tangentB = e2 / l2;
+        }
+    }
+    else {
+        float bestSum = -std::numeric_limits<float>::infinity();
+        for (size_t i = 0; i < ipCount; ++i) {
+            Vec2 s = intersectionPoints[i];
+            Vec2 e = intersectionPoints[(i + 1) % ipCount];
+            float sum = line.computeEquation(s) + line.computeEquation(e);
+            if (sum > bestSum) {
+                bestSum = sum;
+                bestS   = s;
+                bestE   = e;
+            }
+        }
+        tangentB = Math::normalize(bestE - bestS);
+    }
+
+    contactPoint = {0,0};
+    for (auto& p : intersectionPoints) {
+        contactPoint += p;
+    }
+    contactPoint /= static_cast<float>(intersectionPoints.size());
+
+    penetration = 0.0f;
+    for (auto& p : intersectionPoints) {
+        float d = line.computeEquation(p);
+        if (d > penetration) penetration = d;
+    }
+
+    tangentA = line.getLineVector();
+
     return true;
 }
+
 enum BodyFlag : int {
     BodyFlag_freezeX        = 0,
     BodyFlag_freezeY        = 1,
@@ -1385,10 +1384,6 @@ private:
     }
 };
 
-// 1. Casos específicos primero (Circle-Circle, Box-Box).
-// 2. Casos mixtos con Círculos.
-// 3. Casos genéricos con Polígonos (usando SAT).
-// 4. Casos con Half-Space al final.
 
 inline bool BodyvsBody(
     Body& A, Body& B,
@@ -1399,113 +1394,146 @@ inline bool BodyvsBody(
     Vec2& tangentB,
     bool* reverseOrder = nullptr)
 {
-    // Inicializar parámetros de salida
     tangentA = {0,0};
     tangentB = {0,0};
     if (reverseOrder) *reverseOrder = false;
 
-    // --- MANEJO DE CASOS ESPECÍFICOS ---
-
-    // 1. Círculo vs Círculo
     if (A.collider.type == ColliderCircle && B.collider.type == ColliderCircle) {
-        Circle ca{ Vec3{A.motionState.pos.x, A.motionState.pos.y, A.collider.collider.circle.radius} };
-        Circle cb{ Vec3{B.motionState.pos.x, B.motionState.pos.y, B.collider.collider.circle.radius} };
-        return CirclevsCircle(ca, cb, penetration, normal, contactPoint);
+        Circle ca{ Vec3{A.motionState.pos.x,
+                        A.motionState.pos.y,
+                        A.collider.collider.circle.radius} };
+        Circle cb{ Vec3{B.motionState.pos.x,
+                        B.motionState.pos.y,
+                        B.collider.collider.circle.radius} };
+        return CirclevsCircle(ca, cb,
+                              penetration, normal, contactPoint);
     }
 
-    // 2. Caja vs Caja (manejado por tu OBBvsOBB original, como se solicitó)
     if (A.collider.type == ColliderBox && B.collider.type == ColliderBox) {
         AABB aabbA = A.getAABB();
         AABB aabbB = B.getAABB();
-        return OBBvsOBB(aabbA, A.motionState.rotation, aabbB, B.motionState.rotation,
-                        penetration, normal, contactPoint, tangentA, tangentB);
+        return OBBvsOBB(aabbA, A.motionState.rotation,
+                        aabbB, B.motionState.rotation,
+                        penetration, normal, contactPoint,
+                        tangentA, tangentB);
     }
 
-    // --- MANEJO DE CASOS MIXTOS ---
-
-    // 3. Círculo vs Caja (y viceversa)
     if (A.collider.type == ColliderBox && B.collider.type == ColliderCircle) {
-        return OBBvsCircle(A.getAABB(), A.motionState.rotation, B.getAABB(), penetration, normal, contactPoint);
+        AABB aabbA = A.getAABB();
+        AABB aabbB = B.getAABB();
+        return OBBvsCircle(aabbA, A.motionState.rotation,
+                           aabbB,
+                           penetration, normal, contactPoint);
     }
+
     if (A.collider.type == ColliderCircle && B.collider.type == ColliderBox) {
-        bool rez = OBBvsCircle(B.getAABB(), B.motionState.rotation, A.getAABB(), penetration, normal, contactPoint);
-        if (rez) normal = -normal;
+        AABB aabbA = A.getAABB();
+        AABB aabbB = B.getAABB();
+        bool rez = OBBvsCircle(aabbB, B.motionState.rotation,
+                               aabbA,
+                               penetration, normal, contactPoint);
+        normal = -normal;
         return rez;
     }
 
-    // 4. Círculo vs Polígono (y viceversa) - Usando el nuevo SAT
-    if (A.collider.type == ColliderCircle && B.collider.type == ColliderConvexPolygon) {
-        if (reverseOrder) *reverseOrder = true;
-        return CirclevsConvexPolygon(A.getAABB(), B.collider.collider.convexPolygon, B.motionState.pos, B.motionState.rotation, penetration, normal, contactPoint);
-    }
-    if (A.collider.type == ColliderConvexPolygon && B.collider.type == ColliderCircle) {
-        bool rez = CirclevsConvexPolygon(B.getAABB(), A.collider.collider.convexPolygon, A.motionState.pos, A.motionState.rotation, penetration, normal, contactPoint);
-        if (rez) normal = -normal;
-        return rez;
-    }
-
-    // --- MANEJO GENÉRICO DE POLÍGONOS RESTANTES ---
-
-    // 5. Polygon-Polygon y Box-Polygon (y viceversa)
-    if ((A.collider.type == ColliderConvexPolygon || A.collider.type == ColliderBox) &&
-        (B.collider.type == ColliderConvexPolygon || B.collider.type == ColliderBox))
-    {
-        // Se promueve temporalmente una Caja a un Polígono para el cálculo
-        ConvexPolygon polyA = A.collider.collider.convexPolygon;
-        if (A.collider.type == ColliderBox) {
-            Vec2 half = A.collider.collider.box.size * 0.5f;
-            Vec2 vertices[] = {{-half.x, -half.y}, {half.x, -half.y}, {half.x, half.y}, {-half.x, half.y}};
-            polyA = createConvexPolygonCollider(vertices, 4).collider.convexPolygon;
-        }
-
-        ConvexPolygon polyB = B.collider.collider.convexPolygon;
-        if (B.collider.type == ColliderBox) {
-            Vec2 half = B.collider.collider.box.size * 0.5f;
-            Vec2 vertices[] = {{-half.x, -half.y}, {half.x, -half.y}, {half.x, half.y}, {-half.x, half.y}};
-            polyB = createConvexPolygonCollider(vertices, 4).collider.convexPolygon;
-        }
-
-        // Se llama a la función genérica PolygonVsPolygon basada en SAT
-        bool result = PolygonVsPolygon(
-            polyA, A.motionState.pos, A.motionState.rotation,
-            polyB, B.motionState.pos, B.motionState.rotation,
-            normal, penetration);
-
-        // Se usa una simplificación para encontrar un punto de contacto válido
-        if (result) {
-            Vec2 verticesA_ws[PH2D_MAX_CONVEX_SHAPE_POINTS];
-            polyA.getCornersRotatedInWorldSpace(verticesA_ws, A.motionState.rotation, A.motionState.pos);
-            Vec2 verticesB_ws[PH2D_MAX_CONVEX_SHAPE_POINTS];
-            polyB.getCornersRotatedInWorldSpace(verticesB_ws, B.motionState.rotation, B.motionState.pos);
-            int idxA = findSupportPoint(verticesA_ws, polyA.vertexCount, -normal);
-            int idxB = findSupportPoint(verticesB_ws, polyB.vertexCount, normal);
-            contactPoint = (verticesA_ws[idxA] + verticesB_ws[idxB]) * 0.5f;
-        }
-
-        return result;
-    }
-
-    // --- CASOS CON HALF-SPACE ---
-
-    // 6. Colisiones donde A es un HalfSpace
-    if (A.collider.type == ColliderHalfSpace) {
+    if (A.collider.type == ColliderHalfSpace && B.collider.type == ColliderCircle) {
+        AABB aabbB = B.getAABB();
         LineEquation eq = A.getLineEquationForHalfPlaneColliders();
-        if (B.collider.type == ColliderCircle) return HalfSpaceVSCircle(eq, B.getAABB(), penetration, normal, contactPoint);
-        if (B.collider.type == ColliderBox) return HalfSpaceVsOBB(eq, B.getAABB(), B.motionState.rotation, penetration, normal, contactPoint, tangentA, tangentB);
-        if (B.collider.type == ColliderConvexPolygon) return HalfSpaceVsConvexPolygon(eq, B.collider.collider.convexPolygon, B.motionState.pos, B.motionState.rotation, penetration, normal, contactPoint, tangentA, tangentB);
-    }
-    // 7. Colisiones donde B es un HalfSpace
-    if (B.collider.type == ColliderHalfSpace) {
-        if (reverseOrder) *reverseOrder = true;
-        LineEquation eq = B.getLineEquationForHalfPlaneColliders();
-        if (A.collider.type == ColliderCircle) return HalfSpaceVSCircle(eq, A.getAABB(), penetration, normal, contactPoint);
-        if (A.collider.type == ColliderBox) return HalfSpaceVsOBB(eq, A.getAABB(), A.motionState.rotation, penetration, normal, contactPoint, tangentB, tangentA);
-        if (A.collider.type == ColliderConvexPolygon) return HalfSpaceVsConvexPolygon(eq, A.collider.collider.convexPolygon, A.motionState.pos, A.motionState.rotation, penetration, normal, contactPoint, tangentB, tangentA);
+        bool rez = HalfSpaceVSCircle(eq,
+                                     aabbB,
+                                     penetration, normal, contactPoint);
+
+        return rez;
     }
 
-    // Si ninguna combinación coincide, no hay colisión (o no está implementada)
+    if (A.collider.type == ColliderCircle && B.collider.type == ColliderHalfSpace) {
+        AABB aabbA = A.getAABB();
+        LineEquation eq = B.getLineEquationForHalfPlaneColliders();
+        if (reverseOrder) *reverseOrder = true;
+        return HalfSpaceVSCircle(eq,
+                                 aabbA,
+                                 penetration, normal, contactPoint);
+    }
+
+    if (A.collider.type == ColliderHalfSpace && B.collider.type == ColliderBox) {
+        AABB aabbB = B.getAABB();
+        LineEquation eq = A.getLineEquationForHalfPlaneColliders();
+        bool rez = HalfSpaceVsOBB(eq,
+                                 aabbB,
+                                 B.motionState.rotation,
+                                 penetration, normal, contactPoint,
+                                 tangentA, tangentB);
+        return rez;
+    }
+
+    if (A.collider.type == ColliderBox && B.collider.type == ColliderHalfSpace) {
+        AABB aabbA = A.getAABB();
+        LineEquation eq = B.getLineEquationForHalfPlaneColliders();
+        if (reverseOrder) *reverseOrder = true;
+        return HalfSpaceVsOBB(eq,
+                             aabbA,
+                             A.motionState.rotation,
+                             penetration, normal, contactPoint,
+                             tangentB, tangentA);
+    }
+
+    if (A.collider.type == ColliderHalfSpace &&
+        B.collider.type == ColliderConvexPolygon)
+    {
+        LineEquation eq = A.getLineEquationForHalfPlaneColliders();
+        bool rez = HalfSpaceVsConvexPolygon(
+            eq,
+            B.collider.collider.convexPolygon,
+            B.motionState.pos,
+            B.motionState.rotation,
+            penetration, normal, contactPoint,
+            tangentA, tangentB);
+        normal = -normal;
+        return rez;
+    }
+
+    if (A.collider.type == ColliderConvexPolygon &&
+        B.collider.type == ColliderHalfSpace)
+    {
+        LineEquation eq = B.getLineEquationForHalfPlaneColliders();
+        if (reverseOrder) *reverseOrder = true;
+        return HalfSpaceVsConvexPolygon(
+            eq,
+            A.collider.collider.convexPolygon,
+            A.motionState.pos,
+            A.motionState.rotation,
+            penetration, normal, contactPoint,
+            tangentB, tangentA);
+    }
+
+    if (A.collider.type == ColliderCircle &&
+        B.collider.type == ColliderConvexPolygon)
+    {
+        if (reverseOrder) *reverseOrder = true;
+        return CirclevsConvexPolygon(
+            A.getAABB(),
+            B.collider.collider.convexPolygon,
+            B.motionState.pos,
+            B.motionState.rotation,
+            penetration, normal, contactPoint);
+    }
+
+    if (A.collider.type == ColliderConvexPolygon &&
+        B.collider.type == ColliderCircle)
+    {
+        bool rez = CirclevsConvexPolygon(
+            B.getAABB(),
+            A.collider.collider.convexPolygon,
+            A.motionState.pos,
+            A.motionState.rotation,
+            penetration, normal, contactPoint);
+        normal = -normal;
+        return rez;
+    }
+
     return false;
 }
+
 
 struct ManifoldIntersection
 {
@@ -1530,11 +1558,11 @@ struct SimulationPhysicsSettings
     float maxAcceleration        {10000.0f};
     float maxAirDrag             {  100.0f};
     float maxAngularDrag         {  100.0f};
-    float airDragCoefficient     {    0.1f};
-    float rotationalDragCoefficient{   0.01f};
-    float restingVelocity        {    0.01f};
+    float airDragCoefficient     {    0.05f};
+    float rotationalDragCoefficient{   0.02f};
+    float restingVelocity        {    2.f};
     // 0.01 grados → radianes = 0.01 * π/180
-    float restingAngularVelocity { 0.01f * (3.14159265358979323846f / 180.0f) };
+    float restingAngularVelocity { 2.f /* (3.14159265358979323846f / 180.0f)*/ };
 };
 
 struct Constrain
@@ -1554,10 +1582,11 @@ struct PhysicsEngine
     std::unordered_map<ph2dBodyId, Constrain> constrains;
 
     std::vector<ManifoldIntersection> intersections;
+    std::unordered_map<ph2dBodyId, std::unordered_map<ph2dBodyId, ManifoldIntersection>> contacts;
 
     float setFixedTimeStamp{0.008f};
     float maxAccumulated    {0.32f};
-    int   collisionChecksCount{8};
+    int   collisionChecksCount{16};
 
     float _fixedTimeAccumulated{0.0f};
 
@@ -1722,7 +1751,7 @@ inline void PhysicsEngine::runSimulation(float deltaTime)
             if (invMassA + invMassB == 0.0f) return;
 
             const float percent = 0.20f;
-            const float slop    = 0.01f;
+            const float slop    = 4.f;
             float k = std::max(pen - slop, 0.0f) / (invMassA + invMassB) * percent;
             Vec2 corr = n * k;
             A.motionState.pos -= corr * invMassA;
@@ -1861,6 +1890,7 @@ inline void PhysicsEngine::runSimulation(float deltaTime)
         }
 
         intersections.clear();
+        std::unordered_map<ph2dBodyId, std::unordered_map<ph2dBodyId, ManifoldIntersection>> new_contacts;
         for (auto &it1 : bodies) {
             for (auto &it2 : bodies) {
                 if (it1.first >= it2.first) continue;
@@ -1889,7 +1919,15 @@ inline void PhysicsEngine::runSimulation(float deltaTime)
                     }
                     m.contactPoint = contact;
                     m.penetration  = pen;
-                    intersections.push_back(m);
+                    // contain returns a boolean. Usable in C++20
+
+                    if (contacts.find(it1.first) != contacts.end() && contacts[it1.first].find(it2.first) != contacts[it1.first].end()) {
+                        intersections.push_back(m);
+                        new_contacts[it1.first][it2.first] = m;
+                    } else {
+                        intersections.push_back(contacts[it1.first][it2.first]);
+                        new_contacts[it1.first][it2.first] = contacts[it1.first][it2.first];
+                    }
                 }
             }
         }
